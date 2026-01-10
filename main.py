@@ -1,7 +1,7 @@
 from dotenv import load_dotenv
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 import pytz
 
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
@@ -54,7 +54,7 @@ async def add_reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await show_timezone_selection(update, context, "🌍 Please select your timezone first:")
         return ConversationHandler.END
     
-    await update.message.reply_text("What should I remind you about?")
+    await update.message.reply_text("📝 What should I remind you about?")
     return WAITING_REMINDER
 
 
@@ -62,12 +62,30 @@ async def receive_reminder_text(update: Update, context: ContextTypes.DEFAULT_TY
     user_text = update.message.text
     context.user_data['reminder_text'] = user_text
     
-    reply_keyboard = [["09:00", "14:00"], ["18:00", "20:00"]]
+    # Get user's timezone to calculate times in their local time
+    user_id = update.effective_user.id
+    user_tz = get_user_timezone(user_id)
+    tz = pytz.timezone(user_tz)
+    now = datetime.now(tz)
+    
+    # Calculate dynamic times
+    time_15min = (now + timedelta(minutes=15)).strftime("%H:%M")
+    time_30min = (now + timedelta(minutes=30)).strftime("%H:%M")
+    time_1hr = (now + timedelta(hours=1)).strftime("%H:%M")
+    time_2hr = (now + timedelta(hours=2)).strftime("%H:%M")
+    
+    # Build keyboard with dynamic and fixed times
+    reply_keyboard = [
+        [f"⏱️ {time_15min} (15 min)", f"⏰ {time_30min} (30 min)"],
+        [f"🕐 {time_1hr} (1 hour)", f"🕑 {time_2hr} (2 hours)"],
+        ["🌅 09:00 AM", "🌇 12:00 PM"],
+        ["🌆 06:00 PM", "🌃 09:00 PM"]
+    ]
     
     await update.message.reply_text(
-        f"Attributes noted: {user_text}\nAt what time? (Please send in HH:MM format)",
+        f"✅ Got it! \"*{user_text}*\"\n\n⏰ When should I remind you?",
         reply_markup=ReplyKeyboardMarkup(
-            reply_keyboard, one_time_keyboard=True, input_field_placeholder="HH:MM"
+            reply_keyboard, one_time_keyboard=True, input_field_placeholder="Select or type HH:MM"
         ),
     )
     return WAITING_TIME
@@ -75,6 +93,12 @@ async def receive_reminder_text(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def receive_reminder_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     time_text = update.message.text
+    
+    # Extract just the time if user selected a button with label (e.g., "⏱️ 14:30 (15 min)")
+    if '(' in time_text:
+        # Extract HH:MM from "⏱️ 14:30 (15 min)" format
+        time_text = time_text.split('(')[0].strip().split()[-1]
+    
     reminder_text = context.user_data.get('reminder_text', 'No text')
     telegram_user_id = update.effective_user.id
     
@@ -83,7 +107,7 @@ async def receive_reminder_time(update: Update, context: ContextTypes.DEFAULT_TY
     
     print(f"User Reminder: {reminder_text} at {time_text}")
     
-    await update.message.reply_text(f"✅ Reminder saved! I will remind you: {reminder_text} at {time_text}")
+    await update.message.reply_text(f"✅ Reminder saved! I'll remind you:\n\n📝 *{reminder_text}*\n⏰ at *{time_text}*")
     return ConversationHandler.END
 
 
@@ -189,6 +213,65 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             # Note: User will need to send /addreminder again, but timezone is now set
         else:
             await query.edit_message_text(f"🌍 Timezone set to: {timezone}")
+    
+    elif data.startswith("done_"):
+        # Mark reminder as done
+        reminder_id = int(data.split("_")[1])
+        success = delete_reminder(reminder_id, user_id)
+        
+        if success:
+            await query.edit_message_text(f"{query.message.text}\n\n✅ **Marked as done!**")
+        else:
+            await query.edit_message_text(f"{query.message.text}\n\n❌ Already completed.")
+    
+    elif data.startswith("snooze30_") or data.startswith("snooze60_"):
+        # Snooze reminder
+        parts = data.split("_")
+        snooze_type = parts[0]
+        reminder_id = int(parts[1])
+        user_timezone = parts[2].replace("|", "/")  # Decode timezone
+        
+        # Get the reminder details
+        from db.database import get_connection
+        conn = get_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT reminder_text FROM reminders WHERE id = ? AND telegram_user_id = ?",
+            (reminder_id, user_id)
+        )
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result:
+            reminder_text = result[0]
+            
+            # Calculate new time
+            tz = pytz.timezone(user_timezone)
+            now = datetime.now(tz)
+            
+            if snooze_type == "snooze30":
+                new_time = (now + timedelta(minutes=30)).strftime("%H:%M")
+                snooze_label = "30 minutes"
+            else:  # snooze60
+                new_time = (now + timedelta(hours=1)).strftime("%H:%M")
+                snooze_label = "1 hour"
+            
+            # Update reminder time
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE reminders SET reminder_time = ? WHERE id = ?",
+                (new_time, reminder_id)
+            )
+            conn.commit()
+            conn.close()
+            
+            await query.edit_message_text(
+                f"{query.message.text}\n\n⏰ **Snoozed for {snooze_label}!**\nNew time: {new_time}"
+            )
+            print(f"⏰ Reminder {reminder_id} snoozed to {new_time}")
+        else:
+            await query.edit_message_text(f"{query.message.text}\n\n❌ Reminder not found.")
 
 
 def handle_response(text: str) -> str:
@@ -289,15 +372,29 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             
             # Check if reminder is due
             if current_time == reminder_time:
+                # Create action buttons for the reminder
+                # Encode timezone to avoid issues with special characters in callback data
+                tz_encoded = user_timezone.replace("/", "|")  # Replace / with |
+                
+                keyboard = [
+                    [
+                        InlineKeyboardButton("✅ Done", callback_data=f"done_{reminder_id}"),
+                        InlineKeyboardButton("⏰ +30 min", callback_data=f"snooze30_{reminder_id}_{tz_encoded}")
+                    ],
+                    [
+                        InlineKeyboardButton("🕐 +1 hour", callback_data=f"snooze60_{reminder_id}_{tz_encoded}")
+                    ]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
                 await context.bot.send_message(
                     chat_id=user_id,
                     text=f"⏰ **Reminder!**\n\n{text}",
-                    parse_mode="Markdown"
+                    reply_markup=reply_markup
                 )
                 print(f"✅ Sent reminder to {user_id}: {text} (TZ: {user_timezone})")
                 
-                # Delete the reminder after sending
-                delete_reminder(reminder_id, user_id)
+                # Don't delete yet - let user mark as done or snooze
         except Exception as e:
             print(f"❌ Failed to process reminder {reminder_id}: {e}")
 
