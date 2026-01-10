@@ -26,6 +26,13 @@ def init_db():
         )
     """)
     
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_settings (
+            telegram_user_id INTEGER PRIMARY KEY,
+            timezone TEXT DEFAULT 'UTC'
+        )
+    """)
+    
     conn.commit()
     conn.close()
     print("✅ Database initialized successfully!")
@@ -166,6 +173,79 @@ def get_due_reminders(current_time: str) -> list:
         WHERE reminder_time = ?
         """,
         (current_time,)
+    )
+    
+    reminders = cursor.fetchall()
+    conn.close()
+    
+    return reminders
+
+
+def set_user_timezone(telegram_user_id: int, timezone: str) -> None:
+    """
+    Set or update a user's timezone.
+    
+    Args:
+        telegram_user_id: The Telegram user ID
+        timezone: The timezone string (e.g., 'Asia/Kolkata', 'UTC')
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO user_settings (telegram_user_id, timezone)
+        VALUES (?, ?)
+        """,
+        (telegram_user_id, timezone)
+    )
+    
+    conn.commit()
+    conn.close()
+    print(f"🌍 Timezone set: User={telegram_user_id}, Timezone={timezone}")
+
+
+def get_user_timezone(telegram_user_id: int) -> str:
+    """
+    Get a user's timezone setting.
+    
+    Args:
+        telegram_user_id: The Telegram user ID
+    
+    Returns:
+        The user's timezone string, or 'UTC' if not set
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        "SELECT timezone FROM user_settings WHERE telegram_user_id = ?",
+        (telegram_user_id,)
+    )
+    
+    result = cursor.fetchone()
+    conn.close()
+    
+    return result[0] if result else 'UTC'
+
+
+def get_all_reminders_with_timezone() -> list:
+    """
+    Get all reminders with their user's timezone.
+    
+    Returns:
+        A list of tuples: (id, telegram_user_id, reminder_text, reminder_time, timezone)
+    """
+    conn = get_connection()
+    cursor = conn.cursor()
+    
+    cursor.execute(
+        """
+        SELECT r.id, r.telegram_user_id, r.reminder_text, r.reminder_time,
+               COALESCE(u.timezone, 'UTC') as timezone
+        FROM reminders r
+        LEFT JOIN user_settings u ON r.telegram_user_id = u.telegram_user_id
+        """
     )
     
     reminders = cursor.fetchall()
