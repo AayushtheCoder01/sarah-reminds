@@ -32,12 +32,28 @@ WAITING_REMINDER = 1
 WAITING_TIME = 2
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(
-        f"Hello! I am {BOT_USERNAME}, your reminder bot."
-    )
+    user_id = update.effective_user.id
+    user_tz = get_user_timezone(user_id)
+    
+    # If timezone not set, prompt user to set it
+    if user_tz == 'UTC':  # Default means not set
+        await show_timezone_selection(update, context, "Welcome! Please select your timezone to get started:")
+    else:
+        await update.message.reply_text(
+            f"Hello! I am {BOT_USERNAME}, your reminder bot.\n\nYour timezone: {user_tz}"
+        )
 
 
 async def add_reminder_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user_id = update.effective_user.id
+    user_tz = get_user_timezone(user_id)
+    
+    # If timezone not set, prompt user to set it first
+    if user_tz == 'UTC':  # Default means not set
+        context.user_data['pending_action'] = 'add_reminder'
+        await show_timezone_selection(update, context, "🌍 Please select your timezone first:")
+        return ConversationHandler.END
+    
     await update.message.reply_text("What should I remind you about?")
     return WAITING_REMINDER
 
@@ -162,7 +178,17 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Set user timezone
         timezone = data[3:]  # Remove 'tz_' prefix
         set_user_timezone(user_id, timezone)
-        await query.edit_message_text(f"🌍 Timezone set to: **{timezone}**", parse_mode="Markdown")
+        
+        # Check if there's a pending action
+        pending_action = context.user_data.get('pending_action')
+        
+        if pending_action == 'add_reminder':
+            # Clear pending action
+            context.user_data.pop('pending_action', None)
+            await query.edit_message_text(f"✅ Timezone set to: {timezone}\n\nNow, what should I remind you about?")
+            # Note: User will need to send /addreminder again, but timezone is now set
+        else:
+            await query.edit_message_text(f"🌍 Timezone set to: {timezone}")
 
 
 def handle_response(text: str) -> str:
@@ -186,6 +212,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
     print(f"⚠️ Error: {context.error}")
+
+
+async def show_timezone_selection(update: Update, context: ContextTypes.DEFAULT_TYPE, message: str) -> None:
+    """Show timezone selection keyboard."""
+    keyboard = [
+        [
+            InlineKeyboardButton("🇮🇳 India (IST)", callback_data="tz_Asia/Kolkata"),
+            InlineKeyboardButton("🇺🇸 US East (EST)", callback_data="tz_America/New_York")
+        ],
+        [
+            InlineKeyboardButton("🇺🇸 US West (PST)", callback_data="tz_America/Los_Angeles"),
+            InlineKeyboardButton("🇬🇧 UK (GMT)", callback_data="tz_Europe/London")
+        ],
+        [
+            InlineKeyboardButton("🇩🇪 Germany (CET)", callback_data="tz_Europe/Berlin"),
+            InlineKeyboardButton("🇯🇵 Japan (JST)", callback_data="tz_Asia/Tokyo")
+        ],
+        [
+            InlineKeyboardButton("🇦🇪 Dubai (GST)", callback_data="tz_Asia/Dubai"),
+            InlineKeyboardButton("🇦🇺 Australia (AEST)", callback_data="tz_Australia/Sydney")
+        ],
+        [
+            InlineKeyboardButton("🌐 UTC", callback_data="tz_UTC")
+        ]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(message, reply_markup=reply_markup)
 
 
 async def set_timezone_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
