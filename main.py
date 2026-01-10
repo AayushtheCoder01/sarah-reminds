@@ -275,10 +275,16 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
     app.add_error_handler(error_handler)
 
-    # Start the reminder scheduler (runs every 60 seconds)
+    # Start the reminder scheduler (runs every 60 seconds at :00 seconds)
     job_queue = app.job_queue
-    job_queue.run_repeating(check_reminders, interval=60, first=10)
-    print("⏰ Reminder scheduler started (checking every 60 seconds)")
+    
+    # Calculate seconds until the next minute starts
+    now = datetime.now()
+    seconds_until_next_minute = 60 - now.second
+    
+    # Start checking at the next minute boundary, then every 60 seconds
+    job_queue.run_repeating(check_reminders, interval=60, first=seconds_until_next_minute)
+    print(f"⏰ Reminder scheduler started (first check in {seconds_until_next_minute}s, then every 60s at :00)")
     
     print("🤖 Bot is polling...")
     app.run_polling()
