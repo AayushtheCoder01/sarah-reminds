@@ -71,19 +71,27 @@ async def receive_reminder_text(update: Update, context: ContextTypes.DEFAULT_TY
     # Calculate dynamic times
     time_15min = (now + timedelta(minutes=15)).strftime("%H:%M")
     time_30min = (now + timedelta(minutes=30)).strftime("%H:%M")
+    time_45min = (now + timedelta(minutes=45)).strftime("%H:%M")
     time_1hr = (now + timedelta(hours=1)).strftime("%H:%M")
-    time_2hr = (now + timedelta(hours=2)).strftime("%H:%M")
     
-    # Build keyboard with dynamic and fixed times
+    # Calculate nearest hours (next hour, +2hr, +3hr, +4hr)
+    next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0).strftime("%H:%M")
+    hour_plus2 = (now + timedelta(hours=2)).replace(minute=0, second=0).strftime("%H:%M")
+    hour_plus3 = (now + timedelta(hours=3)).replace(minute=0, second=0).strftime("%H:%M")
+    hour_plus4 = (now + timedelta(hours=4)).replace(minute=0, second=0).strftime("%H:%M")
+    
+    # Fixed times in 24-hour format
+    fixed_times = ["09:00", "12:00", "18:00", "21:00"]
+    
+    # Build keyboard with 12 options (3 rows x 4 columns)
     reply_keyboard = [
-        [f"⏱️ {time_15min} (15 min)", f"⏰ {time_30min} (30 min)"],
-        [f"🕐 {time_1hr} (1 hour)", f"🕑 {time_2hr} (2 hours)"],
-        ["🌅 09:00 AM", "🌇 12:00 PM"],
-        ["🌆 06:00 PM", "🌃 09:00 PM"]
+        [f"⏱️ {time_15min} (15 min)", f"⏰ {time_30min} (30 min)", f"⏲️ {time_45min} (45 min)", f"🕐 {time_1hr} (1 hr)"],
+        [f"🕑 {next_hour} (Next hr)", f"🕒 {hour_plus2} (+2 hr)", f"🕓 {hour_plus3} (+3 hr)", f"🕔 {hour_plus4} (+4 hr)"],
+        [f"🌅 {fixed_times[0]} (Morning)", f"🌇 {fixed_times[1]} (Noon)", f"🌆 {fixed_times[2]} (Evening)", f"🌃 {fixed_times[3]} (Night)"]
     ]
     
     await update.message.reply_text(
-        f"✅ Got it! \"*{user_text}*\"\n\n⏰ When should I remind you?",
+        f"✅ Got it! \"{user_text}\"\n\n⏰ When should I remind you?",
         reply_markup=ReplyKeyboardMarkup(
             reply_keyboard, one_time_keyboard=True, input_field_placeholder="Select or type HH:MM"
         ),
@@ -94,10 +102,14 @@ async def receive_reminder_text(update: Update, context: ContextTypes.DEFAULT_TY
 async def receive_reminder_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     time_text = update.message.text
     
-    # Extract just the time if user selected a button with label (e.g., "⏱️ 14:30 (15 min)")
-    if '(' in time_text:
-        # Extract HH:MM from "⏱️ 14:30 (15 min)" format
-        time_text = time_text.split('(')[0].strip().split()[-1]
+    # Extract just the time (remove emoji and any extra text)
+    # Handle formats like "⏱️ 14:30" or just "14:30"
+    time_parts = time_text.split()
+    # Get the last part that looks like HH:MM
+    for part in reversed(time_parts):
+        if ':' in part and len(part) == 5:  # HH:MM format
+            time_text = part
+            break
     
     reminder_text = context.user_data.get('reminder_text', 'No text')
     telegram_user_id = update.effective_user.id
@@ -107,7 +119,7 @@ async def receive_reminder_time(update: Update, context: ContextTypes.DEFAULT_TY
     
     print(f"User Reminder: {reminder_text} at {time_text}")
     
-    await update.message.reply_text(f"✅ Reminder saved! I'll remind you:\n\n📝 *{reminder_text}*\n⏰ at *{time_text}*")
+    await update.message.reply_text(f"✅ Reminder saved! I'll remind you:\n\n📝 {reminder_text}\n⏰ at {time_text}")
     return ConversationHandler.END
 
 
@@ -372,29 +384,15 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
             
             # Check if reminder is due
             if current_time == reminder_time:
-                # Create action buttons for the reminder
-                # Encode timezone to avoid issues with special characters in callback data
-                tz_encoded = user_timezone.replace("/", "|")  # Replace / with |
-                
-                keyboard = [
-                    [
-                        InlineKeyboardButton("✅ Done", callback_data=f"done_{reminder_id}"),
-                        InlineKeyboardButton("⏰ +30 min", callback_data=f"snooze30_{reminder_id}_{tz_encoded}")
-                    ],
-                    [
-                        InlineKeyboardButton("🕐 +1 hour", callback_data=f"snooze60_{reminder_id}_{tz_encoded}")
-                    ]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
+                # Send reminder without action buttons
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=f"⏰ **Reminder!**\n\n{text}",
-                    reply_markup=reply_markup
+                    text=f"⏰ **Reminder!**\n\n{text}"
                 )
                 print(f"✅ Sent reminder to {user_id}: {text} (TZ: {user_timezone})")
                 
-                # Don't delete yet - let user mark as done or snooze
+                # Delete the reminder after sending
+                delete_reminder(reminder_id, user_id)
         except Exception as e:
             print(f"❌ Failed to process reminder {reminder_id}: {e}")
 
