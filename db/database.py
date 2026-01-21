@@ -22,6 +22,7 @@ def init_db():
             telegram_user_id INTEGER NOT NULL,
             reminder_text TEXT NOT NULL,
             reminder_time TEXT NOT NULL,
+            reminder_date TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -38,7 +39,7 @@ def init_db():
     print("✅ Database initialized successfully!")
 
 
-def add_reminder(telegram_user_id: int, reminder_text: str, reminder_time: str) -> int:
+def add_reminder(telegram_user_id: int, reminder_text: str, reminder_time: str, reminder_date: str = None) -> int:
     """
     Add a new reminder to the database.
     
@@ -46,6 +47,7 @@ def add_reminder(telegram_user_id: int, reminder_text: str, reminder_time: str) 
         telegram_user_id: The Telegram user ID
         reminder_text: The reminder message
         reminder_time: The time for the reminder (HH:MM format)
+        reminder_date: The date for the reminder (YYYY-MM-DD format), None for today
     
     Returns:
         The ID of the newly created reminder
@@ -55,17 +57,17 @@ def add_reminder(telegram_user_id: int, reminder_text: str, reminder_time: str) 
     
     cursor.execute(
         """
-        INSERT INTO reminders (telegram_user_id, reminder_text, reminder_time)
-        VALUES (?, ?, ?)
+        INSERT INTO reminders (telegram_user_id, reminder_text, reminder_time, reminder_date)
+        VALUES (?, ?, ?, ?)
         """,
-        (telegram_user_id, reminder_text, reminder_time)
+        (telegram_user_id, reminder_text, reminder_time, reminder_date)
     )
     
     reminder_id = cursor.lastrowid
     conn.commit()
     conn.close()
     
-    print(f"💾 Reminder saved: ID={reminder_id}, User={telegram_user_id}, Text='{reminder_text}', Time={reminder_time}")
+    print(f"💾 Reminder saved: ID={reminder_id}, User={telegram_user_id}, Text='{reminder_text}', Time={reminder_time}, Date={reminder_date}")
     return reminder_id
 
 
@@ -84,7 +86,7 @@ def get_reminders(telegram_user_id: int) -> list:
     
     cursor.execute(
         """
-        SELECT id, reminder_text, reminder_time, created_at
+        SELECT id, reminder_text, reminder_time, reminder_date, created_at
         FROM reminders
         WHERE telegram_user_id = ?
         ORDER BY created_at DESC
@@ -168,7 +170,7 @@ def get_due_reminders(current_time: str) -> list:
     
     cursor.execute(
         """
-        SELECT id, telegram_user_id, reminder_text, reminder_time
+        SELECT id, telegram_user_id, reminder_text, reminder_time, reminder_date
         FROM reminders
         WHERE reminder_time = ?
         """,
@@ -241,7 +243,7 @@ def get_all_reminders_with_timezone() -> list:
     
     cursor.execute(
         """
-        SELECT r.id, r.telegram_user_id, r.reminder_text, r.reminder_time,
+        SELECT r.id, r.telegram_user_id, r.reminder_text, r.reminder_time, r.reminder_date,
                COALESCE(u.timezone, 'UTC') as timezone
         FROM reminders r
         LEFT JOIN user_settings u ON r.telegram_user_id = u.telegram_user_id

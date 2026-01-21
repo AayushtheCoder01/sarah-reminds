@@ -23,3 +23,11 @@ db/*.db
 # OS generic
 .DS_Store
 Thumbs.db
+
+# Vosk speech recognition model
+vosk-model*/
+
+# Temporary audio files
+*.ogg
+*.wav
+vosk-model.zip

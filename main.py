@@ -21,15 +21,18 @@ from db import (
     get_due_reminders, set_user_timezone, get_user_timezone, get_all_reminders_with_timezone
 )
 
+
 load_dotenv()
 
 # --- Config ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-BOT_USERNAME = os.getenv("BOT_USERNAME", )  # fallback
+BOT_USERNAME = os.getenv("BOT_USERNAME", "@sarahr_bot")  # fallback
 
 # --- States ---
 WAITING_REMINDER = 1
 WAITING_TIME = 2
+WAITING_DATE = 3
+WAITING_TIME_AFTER_DATE = 4
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user_id = update.effective_user.id
@@ -83,11 +86,12 @@ async def receive_reminder_text(update: Update, context: ContextTypes.DEFAULT_TY
     # Fixed times in 24-hour format
     fixed_times = ["09:00", "12:00", "18:00", "21:00"]
     
-    # Build keyboard with 12 options (3 rows x 4 columns)
+    # Build keyboard with 12 options (3 rows x 4 columns) + date button
     reply_keyboard = [
         [f"⏱️ {time_15min} (15 min)", f"⏰ {time_30min} (30 min)", f"⏲️ {time_45min} (45 min)", f"🕐 {time_1hr} (1 hr)"],
         [f"🕑 {next_hour} (Next hr)", f"🕒 {hour_plus2} (+2 hr)", f"🕓 {hour_plus3} (+3 hr)", f"🕔 {hour_plus4} (+4 hr)"],
-        [f"🌅 {fixed_times[0]} (Morning)", f"🌇 {fixed_times[1]} (Noon)", f"🌆 {fixed_times[2]} (Evening)", f"🌃 {fixed_times[3]} (Night)"]
+        [f"🌅 {fixed_times[0]} (Morning)", f"🌇 {fixed_times[1]} (Noon)", f"🌆 {fixed_times[2]} (Evening)", f"🌃 {fixed_times[3]} (Night)"],
+        ["📅 Choose Date"]
     ]
     
     await update.message.reply_text(
@@ -102,10 +106,35 @@ async def receive_reminder_text(update: Update, context: ContextTypes.DEFAULT_TY
 async def receive_reminder_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     time_text = update.message.text
     
+    # Check if user wants to choose a date
+    if "📅" in time_text or "Choose Date" in time_text:
+        # Show date picker
+        user_id = update.effective_user.id
+        user_tz = get_user_timezone(user_id)
+        tz = pytz.timezone(user_tz)
+        now = datetime.now(tz)
+        
+        today = now.strftime("%Y-%m-%d")
+        tomorrow = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+        day_after = (now + timedelta(days=2)).strftime("%Y-%m-%d")
+        
+        reply_keyboard = [
+            [f"📆 Today ({now.strftime('%b %d')})", f"📆 Tomorrow ({(now + timedelta(days=1)).strftime('%b %d')})"],
+            [f"📆 {(now + timedelta(days=2)).strftime('%b %d')}", f"📆 {(now + timedelta(days=3)).strftime('%b %d')}"],
+            [f"📆 {(now + timedelta(days=4)).strftime('%b %d')}", f"📆 {(now + timedelta(days=5)).strftime('%b %d')}"],
+            [f"📆 {(now + timedelta(days=6)).strftime('%b %d')}", "🔙 Back to Time"]
+        ]
+        
+        await update.message.reply_text(
+            "📅 Select a date:",
+            reply_markup=ReplyKeyboardMarkup(
+                reply_keyboard, one_time_keyboard=True, input_field_placeholder="Select date"
+            ),
+        )
+        return WAITING_DATE
+    
     # Extract just the time (remove emoji and any extra text)
-    # Handle formats like "⏱️ 14:30" or just "14:30"
     time_parts = time_text.split()
-    # Get the last part that looks like HH:MM
     for part in reversed(time_parts):
         if ':' in part and len(part) == 5:  # HH:MM format
             time_text = part
@@ -114,18 +143,125 @@ async def receive_reminder_time(update: Update, context: ContextTypes.DEFAULT_TY
     reminder_text = context.user_data.get('reminder_text', 'No text')
     telegram_user_id = update.effective_user.id
     
+    # Get user's timezone to check if time is in the past
+    user_tz = get_user_timezone(telegram_user_id)
+    tz = pytz.timezone(user_tz)
+    now = datetime.now(tz)
+    
+    # Parse the reminder time
+    reminder_hour, reminder_minute = map(int, time_text.split(':'))
+    reminder_datetime = now.replace(hour=reminder_hour, minute=reminder_minute, second=0, microsecond=0)
+    
+    # If time is in the past, schedule for tomorrow
+    reminder_date = None
+    if reminder_datetime <= now:
+        reminder_datetime = reminder_datetime + timedelta(days=1)
+        reminder_date = reminder_datetime.strftime("%Y-%m-%d")
+        date_display = "tomorrow"
+    else:
+        date_display = "today"
+    
     # Save reminder to database
-    add_reminder(telegram_user_id, reminder_text, time_text)
+    add_reminder(telegram_user_id, reminder_text, time_text, reminder_date)
     
-    print(f"User Reminder: {reminder_text} at {time_text}")
+    print(f"User Reminder: {reminder_text} at {time_text} on {date_display}")
     
-    await update.message.reply_text(f"✅ Reminder saved! I'll remind you:\n\n📝 {reminder_text}\n⏰ at {time_text}")
+    await update.message.reply_text(f"✅ Reminder saved! I'll remind you:\n\n📝 {reminder_text}\n⏰ at {time_text} ({date_display})")
+    return ConversationHandler.END
+
+
+async def receive_reminder_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    date_text = update.message.text
+    
+    # Check if user wants to go back
+    if "Back to Time" in date_text:
+        # Re-show time selection
+        return await receive_reminder_text(update, context)
+    
+    # Extract date from button text
+    user_id = update.effective_user.id
+    user_tz = get_user_timezone(user_id)
+    tz = pytz.timezone(user_tz)
+    now = datetime.now(tz)
+    
+    # Parse the selected date
+    if "Today" in date_text:
+        selected_date = now
+    elif "Tomorrow" in date_text:
+        selected_date = now + timedelta(days=1)
+    else:
+        # Extract date from format like "📆 Jan 23"
+        try:
+            date_str = date_text.replace("📆", "").strip().rstrip(")")
+            selected_date = datetime.strptime(f"{date_str} {now.year}", "%b %d %Y")
+            selected_date = tz.localize(selected_date)
+        except:
+            await update.message.reply_text("❌ Invalid date. Please try again.")
+            return WAITING_DATE
+    
+    # Store the date and ask for time
+    context.user_data['reminder_date'] = selected_date.strftime("%Y-%m-%d")
+    
+    # Show time selection
+    reminder_text = context.user_data.get('reminder_text', 'No text')
+    
+    time_15min = (now + timedelta(minutes=15)).strftime("%H:%M")
+    time_30min = (now + timedelta(minutes=30)).strftime("%H:%M")
+    time_45min = (now + timedelta(minutes=45)).strftime("%H:%M")
+    time_1hr = (now + timedelta(hours=1)).strftime("%H:%M")
+    
+    next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0).strftime("%H:%M")
+    hour_plus2 = (now + timedelta(hours=2)).replace(minute=0, second=0).strftime("%H:%M")
+    hour_plus3 = (now + timedelta(hours=3)).replace(minute=0, second=0).strftime("%H:%M")
+    hour_plus4 = (now + timedelta(hours=4)).replace(minute=0, second=0).strftime("%H:%M")
+    
+    fixed_times = ["09:00", "12:00", "18:00", "21:00"]
+    
+    reply_keyboard = [
+        [f"⏱️ {time_15min} (15 min)", f"⏰ {time_30min} (30 min)", f"⏲️ {time_45min} (45 min)", f"🕐 {time_1hr} (1 hr)"],
+        [f"🕑 {next_hour} (Next hr)", f"🕒 {hour_plus2} (+2 hr)", f"🕓 {hour_plus3} (+3 hr)", f"🕔 {hour_plus4} (+4 hr)"],
+        [f"🌅 {fixed_times[0]} (Morning)", f"🌇 {fixed_times[1]} (Noon)", f"🌆 {fixed_times[2]} (Evening)", f"🌃 {fixed_times[3]} (Night)"]
+    ]
+    
+    await update.message.reply_text(
+        f"📅 Date: {selected_date.strftime('%b %d, %Y')}\n\n⏰ What time?",
+        reply_markup=ReplyKeyboardMarkup(
+            reply_keyboard, one_time_keyboard=True, input_field_placeholder="Select or type HH:MM"
+        ),
+    )
+    return WAITING_TIME_AFTER_DATE
+
+
+async def receive_time_after_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    time_text = update.message.text
+    
+    # Extract just the time
+    time_parts = time_text.split()
+    for part in reversed(time_parts):
+        if ':' in part and len(part) == 5:
+            time_text = part
+            break
+    
+    reminder_text = context.user_data.get('reminder_text', 'No text')
+    reminder_date = context.user_data.get('reminder_date')
+    telegram_user_id = update.effective_user.id
+    
+    # Save reminder
+    add_reminder(telegram_user_id, reminder_text, time_text, reminder_date)
+    
+    print(f"User Reminder: {reminder_text} at {time_text} on {reminder_date}")
+    
+    await update.message.reply_text(f"✅ Reminder saved! I'll remind you:\n\n📝 {reminder_text}\n📅 {reminder_date}\n⏰ at {time_text}")
     return ConversationHandler.END
 
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Operation cancelled.")
     return ConversationHandler.END
+
+
+
+
 
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -138,7 +274,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/settimezone - Set your timezone\n"
         "/clear - Delete all reminders\n"
         "/help - Show this help message\n"
-        "/cancel - Cancel current operation"
+        "/cancel - Cancel current operation\n"
     )
     await update.message.reply_text(help_text, parse_mode="Markdown")
 
@@ -155,15 +291,20 @@ async def list_reminders(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     message = "📝 **Your Reminders:**\n\n"
     
     for reminder in reminders:
-        reminder_id, text, time, created_at = reminder
-        message += f"• {text} at {time}\n"
+        reminder_id, text, time, reminder_date, created_at = reminder
+        
+        # Format date display
+        if reminder_date:
+            date_display = f" on {reminder_date}"
+        else:
+            date_display = " (today)"
         
         # Create inline keyboard with delete button for each reminder
         keyboard = [[InlineKeyboardButton("🗑️ Delete", callback_data=f"delete_{reminder_id}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(
-            f"📌 {text} - {time}",
+            f"📌 {text} - {time}{date_display}",
             reply_markup=reply_markup
         )
 
@@ -375,15 +516,20 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE) -> None:
     all_reminders = get_all_reminders_with_timezone()
     
     for reminder in all_reminders:
-        reminder_id, user_id, text, reminder_time, user_timezone = reminder
+        reminder_id, user_id, text, reminder_time, reminder_date, user_timezone = reminder
         
         try:
-            # Get current time in user's timezone
+            # Get current time and date in user's timezone
             tz = pytz.timezone(user_timezone)
-            current_time = datetime.now(tz).strftime("%H:%M")
+            now = datetime.now(tz)
+            current_time = now.strftime("%H:%M")
+            current_date = now.strftime("%Y-%m-%d")
             
-            # Check if reminder is due
-            if current_time == reminder_time:
+            # Check if reminder is due (match time and date)
+            # If reminder_date is None, it's for today (or was scheduled for today)
+            date_matches = (reminder_date is None or reminder_date == current_date)
+            
+            if current_time == reminder_time and date_matches:
                 # Send reminder without action buttons
                 await context.bot.send_message(
                     chat_id=user_id,
@@ -409,6 +555,8 @@ if __name__ == "__main__":
         states={
             WAITING_REMINDER: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reminder_text)],
             WAITING_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reminder_time)],
+            WAITING_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_reminder_date)],
+            WAITING_TIME_AFTER_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_time_after_date)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
     )
@@ -420,6 +568,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("clear", clear_reminders))
     app.add_handler(CommandHandler("settimezone", set_timezone_command))
     app.add_handler(CallbackQueryHandler(button_callback))
+
     app.add_handler(MessageHandler(filters.TEXT, handle_message))
     app.add_error_handler(error_handler)
 
